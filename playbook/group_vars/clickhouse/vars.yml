@@ -4,3 +4,7 @@ clickhouse_packages:
   - clickhouse-client
   - clickhouse-server
   - clickhouse-common-static
+clickhouse_config:
+  listen_host: "0.0.0.0"
+  max_connections: 4096
+  max_memory_usage: 10000000000

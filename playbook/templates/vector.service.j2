@@ -1,0 +1,19 @@
+[Unit]
+Description=Vector
+Documentation=https://vector.dev
+After=network.target clickhouse-server.service
+Requires=clickhouse-server.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=/usr/local/bin/vector validate {{ vector_config_dir }}/vector.toml
+ExecStart=/usr/local/bin/vector --config {{ vector_config_dir }}/vector.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

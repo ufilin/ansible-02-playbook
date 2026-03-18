@@ -7,30 +7,256 @@
       ansible.builtin.service:
         name: clickhouse-server
         state: restarted
+        enabled: true
+
+    - name: Clean up downloaded rpm files
+      ansible.builtin.file:
+        path: "/tmp/{{ item }}-{{ clickhouse_version }}.rpm"
+        state: absent
+      loop: "{{ clickhouse_packages }}"
+      listen: "cleanup rpm files"
+
   tasks:
-    - block:
-        - name: Get clickhouse distrib
-          ansible.builtin.get_url:
-            url: "https://packages.clickhouse.com/rpm/stable/{{ item }}-{{ clickhouse_version }}.noarch.rpm"
-            dest: "./{{ item }}-{{ clickhouse_version }}.rpm"
-          with_items: "{{ clickhouse_packages }}"
-      rescue:
-        - name: Get clickhouse distrib
-          ansible.builtin.get_url:
-            url: "https://packages.clickhouse.com/rpm/stable/clickhouse-common-static-{{ clickhouse_version }}.x86_64.rpm"
-            dest: "./clickhouse-common-static-{{ clickhouse_version }}.rpm"
+    - name: Ensure /tmp is writable
+      ansible.builtin.file:
+        path: /tmp
+        state: directory
+        mode: '1777'
+      become: true
+
+    - name: Get clickhouse client and server (noarch)
+      ansible.builtin.get_url:
+        url: "https://packages.clickhouse.com/rpm/stable/{{ item }}-{{ clickhouse_version }}.noarch.rpm"
+        dest: "/tmp/{{ item }}-{{ clickhouse_version }}.rpm"
+        mode: '0644'
+        timeout: 30
+        validate_certs: true
+      with_items:
+        - clickhouse-client
+        - clickhouse-server
+      register: client_server_download
+      retries: 3
+      delay: 5
+      until: client_server_download is success
+
+    - name: Get clickhouse common static (x86_64)
+      ansible.builtin.get_url:
+        url: "https://packages.clickhouse.com/rpm/stable/clickhouse-common-static-{{ clickhouse_version }}.x86_64.rpm"
+        dest: "/tmp/clickhouse-common-static-{{ clickhouse_version }}.rpm"
+        mode: '0644'
+        timeout: 30
+        validate_certs: true
+      register: common_download
+      retries: 3
+      delay: 5
+      until: common_download is success
+      ignore_errors: true
+
+    - name: Alternative URL for common static (fallback)
+      ansible.builtin.get_url:
+        url: "https://packages.clickhouse.com/rpm/stable/clickhouse-common-static-{{ clickhouse_version }}.noarch.rpm"
+        dest: "/tmp/clickhouse-common-static-{{ clickhouse_version }}.rpm"
+        mode: '0644'
+        timeout: 30
+        validate_certs: true
+      when: common_download is failed
+      register: common_fallback
+      retries: 3
+      delay: 5
+      until: common_fallback is success
+
+    - name: Fail if no common static package downloaded
+      ansible.builtin.fail:
+        msg: "Failed to download clickhouse-common-static package"
+      when: common_download is failed and common_fallback is failed
+
+    - name: Import ClickHouse GPG key
+      become: true
+      ansible.builtin.rpm_key:
+        state: present
+        key: https://packages.clickhouse.com/rpm/stable/repodata/repomd.xml.key
+      register: gpg_key_result
+      failed_when: false
+      changed_when: gpg_key_result.changed
+
     - name: Install clickhouse packages
       become: true
       ansible.builtin.yum:
         name:
-          - clickhouse-common-static-{{ clickhouse_version }}.rpm
-          - clickhouse-client-{{ clickhouse_version }}.rpm
-          - clickhouse-server-{{ clickhouse_version }}.rpm
-      notify: Start clickhouse service
+          - "/tmp/clickhouse-common-static-{{ clickhouse_version }}.rpm"
+          - "/tmp/clickhouse-client-{{ clickhouse_version }}.rpm"
+          - "/tmp/clickhouse-server-{{ clickhouse_version }}.rpm"
+        state: present
+        disable_gpg_check: true
+      notify:
+        - Start clickhouse service
+        - Clean up downloaded rpm files
+      register: install_result
+      retries: 2
+      delay: 10
+      until: install_result is success
+
     - name: Flush handlers
-      meta: flush_handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for clickhouse to start
+      ansible.builtin.wait_for:
+        port: 8123
+        host: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+        delay: 5
+        timeout: 60
+      register: wait_result
+      failed_when:
+        - wait_result is failed
+        - "'Timeout' not in wait_result.msg"
+
     - name: Create database
-      ansible.builtin.command: "clickhouse-client -q 'create database logs;'"
+      ansible.builtin.command:
+        cmd: "clickhouse-client -q 'create database if not exists logs;'"
       register: create_db
-      failed_when: create_db.rc != 0 and create_db.rc !=82
+      failed_when: create_db.rc != 0 and 'already exists' not in create_db.stderr
       changed_when: create_db.rc == 0
+      ignore_errors: true
+
+    - name: Create vector_logs table
+      ansible.builtin.command:
+        cmd: |
+          clickhouse-client -q "
+          CREATE TABLE IF NOT EXISTS logs.vector_logs (
+            message String,
+            level String DEFAULT 'info',
+            timestamp DateTime DEFAULT now(),
+            file String DEFAULT '',
+            source_type String DEFAULT 'file',
+            app String DEFAULT '',
+            host String DEFAULT 'localhost'
+          ) ENGINE = MergeTree()
+          ORDER BY timestamp;"
+      register: table_create
+      changed_when: "'already exists' not in table_create.stderr"
+      failed_when: table_create.rc != 0 and 'already exists' not in table_create.stderr
+
+- name: Install Vector
+  hosts: clickhouse
+  become: true
+  vars:
+    vector_version: "0.34.0"
+    vector_arch: "x86_64"
+    vector_download_url: "https://packages.timber.io/vector/{{ vector_version }}/vector-{{ vector_version }}-{{ vector_arch }}-unknown-linux-gnu.tar.gz"
+    vector_install_dir: "/opt/vector"
+    vector_config_dir: "/etc/vector"
+    vector_data_dir: "/var/lib/vector"
+  handlers:
+    - name: Restart vector service
+      ansible.builtin.systemd:
+        name: vector
+        state: restarted
+        daemon_reload: true
+      become: true
+
+    - name: Clean up vector archive
+      ansible.builtin.file:
+        path: "/tmp/vector-{{ vector_version }}.tar.gz"
+        state: absent
+      listen: "cleanup vector archive"
+
+  tasks:
+    - name: Ensure required directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+      loop:
+        - "{{ vector_install_dir }}"
+        - "{{ vector_config_dir }}"
+        - "{{ vector_data_dir }}"
+
+    - name: Download Vector archive
+      ansible.builtin.get_url:
+        url: "{{ vector_download_url }}"
+        dest: "/tmp/vector-{{ vector_version }}.tar.gz"
+        mode: '0644'
+        timeout: 60
+        validate_certs: true
+      register: vector_download
+      notify: Clean up vector archive
+      retries: 3
+      delay: 5
+      until: vector_download is success
+
+    - name: Extract Vector archive
+      ansible.builtin.unarchive:
+        src: "/tmp/vector-{{ vector_version }}.tar.gz"
+        dest: "{{ vector_install_dir }}"
+        remote_src: true
+        extra_opts:
+          - --strip-components=2
+          - --transform=s/vector-{{ vector_version }}-{{ vector_arch }}-unknown-linux-gnu/vector/
+        creates: "{{ vector_install_dir }}/bin/vector"
+
+    - name: Create symlink for vector binary
+      ansible.builtin.file:
+        src: "{{ vector_install_dir }}/bin/vector"
+        dest: "/usr/local/bin/vector"
+        state: link
+        mode: '0755'
+        force: true
+
+    - name: Deploy Vector configuration
+      ansible.builtin.template:
+        src: vector.toml.j2
+        dest: "{{ vector_config_dir }}/vector.toml"
+        mode: '0644'
+        owner: root
+        group: root
+      notify: Restart vector service
+      register: config_deploy
+
+    - name: Validate Vector configuration
+      ansible.builtin.command:
+        cmd: "/usr/local/bin/vector validate {{ vector_config_dir }}/vector.toml"
+      register: validate_config
+      changed_when: false
+      failed_when: validate_config.rc != 0
+      when: config_deploy.changed
+
+    - name: Create Vector systemd service
+      ansible.builtin.template:
+        src: vector.service.j2
+        dest: "/etc/systemd/system/vector.service"
+        mode: '0644'
+        owner: root
+        group: root
+      notify: Restart vector service
+
+    - name: Enable and start Vector service
+      ansible.builtin.systemd:
+        name: vector
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Wait for Vector to start
+      ansible.builtin.wait_for:
+        port: 8686
+        host: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+        delay: 5
+        timeout: 30
+      register: vector_wait
+      failed_when:
+        - vector_wait is failed
+        - "'Timeout' not in vector_wait.msg"
+      changed_when: false
+
+    - name: Flush handlers to clean up archive
+      ansible.builtin.meta: flush_handlers
+      when: vector_download.changed
+
+    - name: Verify Vector is running
+      ansible.builtin.systemd:
+        name: vector
+        state: started
+      register: vector_status
+      failed_when: vector_status.status.ActiveState != 'active'

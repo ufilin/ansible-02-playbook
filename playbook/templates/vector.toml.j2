@@ -1,0 +1,53 @@
+[sources.in]
+  type = "file"
+  include = ["/var/log/**/*.log"]
+  exclude = ["/var/log/vector/**", "/var/log/clickhouse-server/clickhouse-server.log"]
+  ignore_older_secs = 600
+  fingerprinting.strategy = "device_and_inode"
+
+[transforms.logs]
+  type = "remap"
+  inputs = ["in"]
+  source = '''
+  # Пробуем распарсить .message как JSON
+  parsed, parse_err = parse_json(.message)
+  
+  if parse_err == null {
+    # Если парсинг успешен, пробуем объединить с исходным событием
+    ., merge_err = merge(., parsed)
+    if merge_err != null {
+      log("Failed to merge: " + merge_err, level: "error")
+    }
+  } else {
+    # Если не JSON, оставляем .message как есть
+    .message = string(.message) ?? ""
+    .level = "info"
+  }
+  
+  # Добавляем служебные поля с защитой от null
+  .timestamp = now()
+  .file = string(."file") ?? ""
+  .source_type = "file"
+  
+  # Убеждаемся, что все поля имеют правильные типы с защитой от null
+  .message = string(.message) ?? ""
+  .level = string(.level) ?? "info"
+  .app = string(.app) ?? ""
+  .host = string(.host) ?? "localhost"
+  '''
+
+[sinks.out]
+  type = "clickhouse"
+  inputs = ["logs"]
+  endpoint = "http://localhost:8123"
+  database = "logs"
+  table = "vector_logs"
+  compression = "gzip"
+  healthcheck = true
+  
+  [sinks.out.encoding]
+    timestamp_format = "unix"
+  
+  [sinks.out.batch]
+    max_events = 1000
+    timeout_secs = 5

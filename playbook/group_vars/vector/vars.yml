@@ -1,0 +1,20 @@
+---
+vector_version: "0.34.0"
+vector_arch: "x86_64"
+vector_download_url: "https://packages.timber.io/vector/{{ vector_version }}/vector-{{ vector_version }}-{{ vector_arch }}-unknown-linux-gnu.tar.gz"
+vector_install_dir: "/opt/vector"
+vector_config_dir: "/etc/vector"
+vector_data_dir: "/var/lib/vector"
+vector_config:
+  data_dir: "{{ vector_data_dir }}"
+  sources:
+    - name: system_logs
+      type: file
+      include: ["/var/log/**/*.log"]
+      exclude: ["/var/log/vector/**", "/var/log/clickhouse-server/clickhouse-server.log"]
+  sinks:
+    - name: clickhouse
+      type: clickhouse
+      endpoint: "http://localhost:8123"
+      database: "logs"
+      table: "vector_logs"
