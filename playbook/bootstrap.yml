@@ -1,0 +1,199 @@
+---
+- name: Bootstrap Python from scratch
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Check Python version
+      ansible.builtin.raw: |
+        if command -v python3 >/dev/null 2>&1; then
+          python3 --version 2>&1 | cut -d' ' -f2
+        else
+          echo "not_installed"
+        fi
+      register: python_check
+      changed_when: false
+      failed_when: false
+      args:
+        executable: /bin/bash
+
+    - name: Display current Python version
+      ansible.builtin.debug:
+        msg: "Current Python version: {{ python_check.stdout }}"
+
+    - name: Detect OS and package manager
+      ansible.builtin.raw: |
+        if command -v apt-get >/dev/null 2>&1; then
+          echo "apt"
+        elif command -v yum >/dev/null 2>&1; then
+          echo "yum"
+        elif command -v dnf >/dev/null 2>&1; then
+          echo "dnf"
+        else
+          echo "unknown"
+        fi
+      register: pkg_manager
+      changed_when: false
+      args:
+        executable: /bin/bash
+
+    - name: Display package manager
+      ansible.builtin.debug:
+        msg: "Package manager: {{ pkg_manager.stdout }}"
+
+    - name: Install Python 3.8 on CentOS 7 using IUS repository
+      ansible.builtin.raw: |
+        set -e
+
+        # Install IUS repository
+        yum install -y https://repo.ius.io/ius-release-el7.rpm
+
+        # Remove old Python if needed
+        yum remove -y python3 python3-libs python3-devel || true
+
+        # Install Python 3.8 from IUS
+        yum install -y python38 python38-devel python38-libs python38-pip
+
+        # Create symlinks
+        ln -sf /usr/bin/python3.8 /usr/bin/python3
+        ln -sf /usr/bin/pip3.8 /usr/bin/pip3
+
+        # Verify installation
+        python3 --version
+        pip3 --version
+
+        echo "Python 3.8 installation completed"
+      when:
+        - pkg_manager.stdout is search("yum")
+        - python_check.stdout is version('3.8', '<') or python_check.stdout is search("not_installed")
+      register: install_result_ius
+      changed_when: install_result_ius.rc == 0
+      args:
+        executable: /bin/bash
+
+    - name: Alternative - Install Python 3.8 from source (if IUS fails)
+      ansible.builtin.raw: |
+        set -e
+
+        # Install build dependencies
+        yum install -y gcc openssl-devel bzip2-devel libffi-devel zlib-devel wget make
+
+        # Download Python 3.8 source
+        cd /tmp
+        wget https://www.python.org/ftp/python/3.8.18/Python-3.8.18.tgz
+        tar xzf Python-3.8.18.tgz
+        cd Python-3.8.18
+
+        # Configure and compile
+        ./configure --enable-optimizations --prefix=/usr/local
+        make -j $(nproc)
+        make altinstall
+
+        # Create symlinks
+        ln -sf /usr/local/bin/python3.8 /usr/bin/python3
+        ln -sf /usr/local/bin/pip3.8 /usr/bin/pip3
+
+        # Update library path
+        echo "/usr/local/lib" > /etc/ld.so.conf.d/python3.conf
+        ldconfig
+
+        # Verify installation
+        python3 --version
+
+        # Clean up
+        cd /tmp
+        rm -rf Python-3.8.18*
+
+        echo "Python 3.8 source installation completed"
+      when:
+        - pkg_manager.stdout is search("yum")
+        - python_check.stdout is version('3.8', '<') or python_check.stdout is search("not_installed")
+        - install_result_ius is failed or install_result_ius is skipped
+      register: install_result_source
+      changed_when: install_result_source.rc == 0
+      args:
+        executable: /bin/bash
+
+    - name: Install Python 3.8 on CentOS 8+ (dnf)
+      ansible.builtin.raw: |
+        set -e
+
+        # Install Python 3.8
+        dnf install -y python3.8 python3.8-devel python3.8-pip
+
+        # Update alternatives
+        alternatives --set python3 /usr/bin/python3.8 2>/dev/null || \
+          alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 1
+
+        # Verify installation
+        python3 --version
+
+        echo "Python 3.8 installation completed"
+      when:
+        - pkg_manager.stdout is search("dnf")
+        - python_check.stdout is version('3.8', '<') or python_check.stdout is search("not_installed")
+      register: install_result_dnf
+      changed_when: install_result_dnf.rc == 0
+      args:
+        executable: /bin/bash
+
+    - name: Install Python 3.8 on Ubuntu/Debian (apt)
+      ansible.builtin.raw: |
+        set -e
+        export DEBIAN_FRONTEND=noninteractive
+
+        # Update package lists
+        apt-get update
+
+        # Install Python 3.8
+        apt-get install -y python3.8 python3.8-venv python3.8-dev python3-pip
+
+        # Update alternatives
+        update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 1
+
+        # Verify installation
+        python3 --version
+
+        echo "Python 3.8 installation completed"
+      when:
+        - pkg_manager.stdout is search("apt")
+        - python_check.stdout is version('3.8', '<') or python_check.stdout is search("not_installed")
+      register: install_result_apt
+      changed_when: install_result_apt.rc == 0
+      args:
+        executable: /bin/bash
+
+    - name: Show installation result
+      ansible.builtin.debug:
+        msg: "{{ install_result_ius.stdout_lines if install_result_ius is defined and install_result_ius is changed else
+                install_result_source.stdout_lines if install_result_source is defined and install_result_source is changed else
+                install_result_dnf.stdout_lines if install_result_dnf is defined and install_result_dnf is changed else
+                install_result_apt.stdout_lines if install_result_apt is defined and install_result_apt is changed else 'No installation performed' }}"
+
+    - name: Verify new Python version
+      ansible.builtin.raw: python3 --version
+      register: verify
+      changed_when: false
+      args:
+        executable: /bin/bash
+
+    - name: Final Python version
+      ansible.builtin.debug:
+        msg: "Python version after bootstrap: {{ verify.stdout }}"
+
+    - name: Install pip if missing
+      ansible.builtin.raw: |
+        if ! command -v pip3 >/dev/null 2>&1; then
+          if command -v yum >/dev/null 2>&1; then
+            yum install -y python38-pip || curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python3 get-pip.py
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y python3-pip
+          elif command -v apt-get >/dev/null 2>&1; then
+            apt-get install -y python3-pip
+          fi
+        fi
+        pip3 --version || echo "pip not installed"
+      register: pip_check
+      changed_when: pip_check.rc == 0
+      args:
+        executable: /bin/bash
