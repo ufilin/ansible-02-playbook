@@ -1,0 +1,103 @@
+---
+- name: Verify Clickhouse installation
+  hosts: clickhouse-01
+  gather_facts: true
+  tasks:
+    - name: Check Python version
+      ansible.builtin.command: python3 --version
+      register: python_version
+      changed_when: false
+      failed_when: false
+
+    - name: Display Python version
+      ansible.builtin.debug:
+        msg: "Python version: {{ python_version.stdout }}"
+
+    - name: Check Clickhouse service status
+      ansible.builtin.systemd:
+        name: clickhouse-server
+        state: started
+      register: service_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display service status
+      ansible.builtin.debug:
+        msg: "Clickhouse service is {{ 'running' if service_status.status.ActiveState == 'active' else 'not running' }}"
+
+    - name: Get Clickhouse version
+      ansible.builtin.command: clickhouse-client --query "SELECT version()"
+      register: ch_version
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    - name: Display Clickhouse version
+      ansible.builtin.debug:
+        msg: "Clickhouse version: {{ ch_version.stdout | default('Not available') }}"
+
+    - name: Check databases
+      ansible.builtin.command: clickhouse-client --query "SHOW DATABASES"
+      register: databases
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    - name: Display databases
+      ansible.builtin.debug:
+        var: databases.stdout_lines | default(['No databases found'])
+
+    - name: Create test table if not exists
+      ansible.builtin.command: |
+        clickhouse-client --query "
+          CREATE TABLE IF NOT EXISTS test_verify (
+            id UInt32,
+            timestamp DateTime,
+            message String
+          ) ENGINE = MergeTree()
+          ORDER BY id"
+      register: create_table
+      changed_when: create_table.rc == 0
+      failed_when: false
+      ignore_errors: true
+
+    - name: Check if table exists and has data
+      ansible.builtin.command: clickhouse-client --query "SELECT count() FROM test_verify"
+      register: table_count
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    - name: Insert test data if table is empty
+      ansible.builtin.command: |
+        clickhouse-client --query "
+          INSERT INTO test_verify VALUES
+          (1, now(), 'Test message 1'),
+          (2, now(), 'Test message 2')"
+      when:
+        - create_table is success
+        - table_count.stdout is defined
+        - table_count.stdout | int == 0
+      register: insert_data
+      changed_when: insert_data.rc == 0
+      failed_when: false
+
+    - name: Read test data
+      ansible.builtin.command: clickhouse-client --query "SELECT * FROM test_verify"
+      register: test_data
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    - name: Display test data
+      ansible.builtin.debug:
+        msg: "{{ test_data.stdout_lines | default(['No test data found']) }}"
+
+    - name: Overall status
+      ansible.builtin.debug:
+        msg:
+          - "✅ Python: {{ python_version.stdout | default('Unknown') }}"
+          - "✅ Clickhouse: {{ ch_version.stdout | default('Not installed') }}"
+          - "✅ Service: {{ 'running' if service_status.status.ActiveState == 'active' else 'stopped' }}"
+          - "✅ Databases: {{ databases.stdout_lines | default(['None']) | join(', ') }}"
+          - "✅ Test data: {{ 'present' if test_data.stdout_lines | length > 0 else 'not found' }}"
