@@ -49,47 +49,15 @@ $ ansible-playbook -i inventory/prod.yml site.yml --diff
 
 📸 Скриншоты выполнения
 *Скриншот 1: Запуск ansible-lint*
-https://screenshots/ansible-lint.png
+https://screenshots/ansible(lint).png
 
 *Скриншот 2: Запуск с --check*
-https://screenshots/check-mode.png
+https://screenshots/ansible(--check).png
 
 *Скриншот 3: Первый запуск с --diff*
-https://screenshots/first-diff.png
+https://screenshots/ansible(--diff).png
 
 *Скриншот 4: Второй запуск с --diff (идемпотентность)*
-https://screenshots/second-diff.png
+https://screenshots/ansible(--diff_2).png
 
-📝 Примечания
-Playbook идемпотентен - повторный запуск не вносит изменений
 
-Для работы требуется доступ по SSH к целевым хостам
-
-Все временные файлы автоматически удаляются после установки
-
-Конфигурация Vector деплоится через Jinja2 шаблоны
-
-Добавлена проверка конфигурации Vector перед применением
-
-text
-
-## 📸 **Создание скриншотов**
-
-Вам нужно сделать скриншоты для пунктов 5-8:
-
-```bash
-# 5. ansible-lint
-ansible-lint site.yml > screenshots/ansible-lint.log
-# Сделайте скриншот терминала с выводом
-
-# 6. --check
-ansible-playbook -i inventory/prod.yml site.yml --check | tee screenshots/check-mode.log
-
-# 7. Первый --diff
-ansible-playbook -i inventory/prod.yml site.yml --diff | tee screenshots/first-diff.log
-
-# 8. Второй --diff
-ansible-playbook -i inventory/prod.yml site.yml --diff | tee screenshots/second-diff.log
-
-# verify
-ansible-playbook -i inventory/prod.yml verify.yml | tee screenshots/verify.log
