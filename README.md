@@ -35,29 +35,31 @@ Playbook не использует теги, но разделен на два p
 
 $ ansible-lint site.yml
 
+<p align="center">
+  <img src="screenshots/ansible(lint).png" width="800">
+</p>
+
 6️⃣ Запуск с флагом --check
 
 $ ansible-playbook -i inventory/prod.yml site.yml --check
+
+<p align="center">
+  <img src="screenshots/ansible(--check).png" width="800">
+</p>
 
 7️⃣ Первый запуск с --diff
 
 $ ansible-playbook -i inventory/prod.yml site.yml --diff
 
+<p align="center">
+  <img src="screenshots/ansible(--diff).png" width="800">
+</p>
+
 8️⃣ Второй запуск с --diff (проверка идемпотентности)
 
 $ ansible-playbook -i inventory/prod.yml site.yml --diff
 
-📸 Скриншоты выполнения
-*Скриншот 1: Запуск ansible-lint*
-https://screenshots/ansible(lint).png
-
-*Скриншот 2: Запуск с --check*
-https://screenshots/ansible(--check).png
-
-*Скриншот 3: Первый запуск с --diff*
-https://screenshots/ansible(--diff).png
-
-*Скриншот 4: Второй запуск с --diff (идемпотентность)*
-https://screenshots/ansible(--diff_2).png
-
+<p align="center">
+  <img src="screenshots/ansible(--diff_2)" width="800">
+</p>
 
